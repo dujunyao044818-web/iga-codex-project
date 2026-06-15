@@ -1,0 +1,45 @@
+name: Run Single Cell GSE171314
+
+on:
+  workflow_dispatch:
+
+jobs:
+  single-cell-reanalysis:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install system and R dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            r-base r-base-dev zip \
+            libcurl4-openssl-dev libssl-dev libxml2-dev \
+            libhdf5-dev libfontconfig1-dev libfreetype6-dev \
+            libpng-dev libtiff5-dev libjpeg-dev \
+            r-cran-data.table r-cran-ggplot2 r-cran-matrix r-cran-patchwork \
+            r-cran-seurat r-cran-seuratobject r-bioc-geoquery
+
+      - name: Check required R packages
+        run: |
+          Rscript -e 'pkgs <- c("GEOquery","Seurat","data.table","ggplot2","Matrix","patchwork"); missing <- pkgs[!vapply(pkgs, requireNamespace, logical(1), quietly=TRUE)]; if(length(missing)>0) stop("Missing packages: ", paste(missing, collapse=", ")); print(sessionInfo())'
+
+      - name: Run independent GSE171314 Seurat reanalysis
+        run: |
+          Rscript R/single_cell_reanalysis_GSE171314.R
+
+      - name: Package single-cell outputs
+        if: always()
+        run: |
+          zip -r single_cell_GSE171314_output.zip output_single_cell || true
+
+      - name: Upload single-cell artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: single_cell_GSE171314_output
+          path: single_cell_GSE171314_output.zip
+          retention-days: 90
