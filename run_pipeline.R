@@ -37,11 +37,20 @@ bulk <- log_step("Download and preprocess GSE104948", load_bulk_gse(cfg))
 group <- log_step("Detect sample groups from phenotype metadata", infer_bulk_groups(bulk$pheno, cfg), required = FALSE)
 if (is.null(group)) group <- factor(rep("Unknown", ncol(bulk$expr)))
 log_step("Annotated PCA and sample annotation export", bulk_qc(bulk$expr, bulk$pheno, group, cfg))
-subtype <- log_step("Consensus clustering k=2..4", run_consensus(bulk$expr, cfg))
-deg <- log_step("limma subtype differential expression", run_limma(bulk$expr, subtype, cfg))
-markers <- log_step("Subtype marker export", get_subtype_markers(deg, cfg))
-log_step("Hallmark GSVA and immune signatures", run_functional(bulk$expr, subtype, cfg), required = FALSE)
-log_step("LASSO subtype model", run_lasso(bulk$expr, subtype, markers, cfg), required = FALSE)
+
+igan_samples <- intersect(names(group)[as.character(group) == "IgAN"], colnames(bulk$expr))
+if (length(igan_samples) < 10) {
+  stop("Too few IgAN samples detected for subtype analysis: ", length(igan_samples))
+}
+igan_expr <- bulk$expr[, igan_samples, drop = FALSE]
+save_analysis_sample_report(bulk$expr, group, igan_expr, cfg)
+message("Using IgAN-only subset for molecular subtyping: n=", ncol(igan_expr))
+
+subtype <- log_step("IgAN-only consensus clustering k=2..4", run_consensus(igan_expr, cfg))
+deg <- log_step("IgAN subtype limma differential expression", run_limma(igan_expr, subtype, cfg))
+markers <- log_step("IgAN subtype marker export", get_subtype_markers(deg, cfg))
+log_step("IgAN Hallmark GSVA and immune signatures", run_functional(igan_expr, subtype, cfg), required = FALSE)
+log_step("IgAN LASSO subtype model", run_lasso(igan_expr, subtype, markers, cfg), required = FALSE)
 log_step("Single-cell validation", run_single_cell(markers, cfg), required = FALSE)
 
 message("Pipeline complete. Outputs written to ", normalizePath(cfg$output_dir))
