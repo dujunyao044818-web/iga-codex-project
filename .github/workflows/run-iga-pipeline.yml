@@ -11,8 +11,8 @@ jobs:
 
     env:
       BIOCONDUCTOR_CONFIG_FILE: ""
-      R_REMOTES_NO_ERRORS_FROM_WARNINGS: true
       BIOCONDUCTOR_ONLINE_VERSION_DIAGNOSIS: "FALSE"
+      R_REMOTES_NO_ERRORS_FROM_WARNINGS: true
 
     steps:
       - name: Checkout repository
@@ -23,7 +23,7 @@ jobs:
         with:
           use-public-rspm: true
 
-      - name: Install system dependencies
+      - name: Install system and Ubuntu R/Bioconductor dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
@@ -41,9 +41,20 @@ jobs:
             libharfbuzz-dev \
             libfribidi-dev \
             zlib1g-dev \
-            zip
+            zip \
+            r-cran-yaml \
+            r-cran-ggplot2 \
+            r-cran-pheatmap \
+            r-cran-matrixstats \
+            r-cran-reshape2 \
+            r-cran-glmnet \
+            r-cran-data.table \
+            r-bioc-geoquery \
+            r-bioc-biobase \
+            r-bioc-limma \
+            r-bioc-consensusclusterplus
 
-      - name: Install R package dependencies
+      - name: Install remaining R package dependencies
         run: |
           Rscript ./scripts/install_r_packages.R
 
