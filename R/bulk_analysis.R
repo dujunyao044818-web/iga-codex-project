@@ -1,3 +1,29 @@
+map_numeric_entrez_to_symbol <- function(ids) {
+  out <- ids
+  numeric_like <- !is.na(ids) & grepl("^[0-9]+$", ids)
+  if (any(numeric_like) && requireNamespace("AnnotationDbi", quietly = TRUE) && requireNamespace("org.Hs.eg.db", quietly = TRUE)) {
+    mapped <- AnnotationDbi::mapIds(
+      org.Hs.eg.db::org.Hs.eg.db,
+      keys = ids[numeric_like],
+      column = "SYMBOL",
+      keytype = "ENTREZID",
+      multiVals = "first"
+    )
+    out[numeric_like] <- unname(mapped)
+  }
+  out
+}
+
+score_gene_column <- function(x, colname) {
+  g <- clean_gene_symbols(as.character(x))
+  g <- map_numeric_entrez_to_symbol(g)
+  valid <- !is.na(g) & g != "" & g != "---" & !grepl("^[0-9]+$", g)
+  symbol_like <- valid & grepl("^[A-Za-z][A-Za-z0-9.-]*$", g)
+  score <- sum(symbol_like)
+  if (grepl("symbol", colname, ignore.case = TRUE)) score <- score + 100000
+  list(score = score, genes = g, keep = valid)
+}
+
 load_bulk_gse <- function(cfg) {
   ensure_packages(c("GEOquery", "Biobase", "limma"))
   geo_id <- cfg$bulk$geo_accession
@@ -12,20 +38,18 @@ load_bulk_gse <- function(cfg) {
   save_table(data.frame(column = colnames(pheno)), file.path(cfg$output_dir, "tables", "GSE104948_pData_columns.csv"))
 
   original_n <- nrow(expr)
-  gene_cols <- grep("symbol|gene", colnames(fdata), ignore.case = TRUE, value = TRUE)
+  gene_cols <- grep("symbol|gene|entrez", colnames(fdata), ignore.case = TRUE, value = TRUE)
   selected_gene_col <- NA_character_
   mapped_n <- 0
   if (length(gene_cols) > 0) {
     best_score <- -1
     for (gene_col in gene_cols) {
-      g <- clean_gene_symbols(as.character(fdata[[gene_col]]))
-      keep_tmp <- !is.na(g) & g != "" & g != "---"
-      score <- sum(keep_tmp)
-      if (score > best_score) {
-        best_score <- score
+      sc <- score_gene_column(fdata[[gene_col]], gene_col)
+      if (sc$score > best_score) {
+        best_score <- sc$score
         selected_gene_col <- gene_col
-        genes <- g
-        keep <- keep_tmp
+        genes <- sc$genes
+        keep <- sc$keep
       }
     }
     if (best_score > 0) {
@@ -37,9 +61,11 @@ load_bulk_gse <- function(cfg) {
   }
   gene_report <- data.frame(
     original_feature_count = original_n,
+    candidate_gene_columns = paste(gene_cols, collapse = ";"),
     selected_gene_column = selected_gene_col,
     mapped_feature_count = mapped_n,
     final_gene_count = nrow(expr),
+    remaining_numeric_gene_labels = sum(grepl("^[0-9]+$", rownames(expr))),
     stringsAsFactors = FALSE
   )
   save_table(gene_report, file.path(cfg$output_dir, "tables", "gene_mapping_report.csv"))
@@ -63,9 +89,6 @@ metadata_text <- function(pheno, columns) {
 }
 
 infer_bulk_groups <- function(pheno, cfg) {
-  # GSE104948 has an exact diagnosis column named diagnosis:ch1.
-  # Use this column first. Do not search all metadata fields because shared
-  # series-level descriptions can incorrectly label every sample as IgAN.
   diagnosis_col <- intersect(c("diagnosis:ch1", "diagnosis", "disease", "group"), colnames(pheno))[1]
   if (!is.na(diagnosis_col)) {
     diagnosis_raw <- as.character(pheno[[diagnosis_col]])
@@ -92,7 +115,7 @@ infer_bulk_groups <- function(pheno, cfg) {
     diagnosis_raw <- NA_character_
     method <- paste0("fallback keyword columns: ", paste(intersect(candidate_cols, colnames(pheno)), collapse = ";"))
   }
-
+  names(group) <- rownames(pheno)
   report <- data.frame(
     sample = rownames(pheno),
     detected_group = group,
@@ -121,6 +144,16 @@ bulk_qc <- function(expr, pheno, group, cfg) {
   save_table(ann, file.path(cfg$output_dir, "tables", "sample_annotation_clean.csv"))
   save_table(df, file.path(cfg$output_dir, "tables", "bulk_pca_coordinates.csv"))
   invisible(df)
+}
+
+save_analysis_sample_report <- function(all_expr, all_group, analysis_expr, cfg) {
+  report <- data.frame(
+    analysis = c("all_samples_for_diagnosis_PCA", "IgAN_only_for_subtyping"),
+    n_samples = c(ncol(all_expr), ncol(analysis_expr)),
+    note = c("Used only for diagnosis-level QC PCA", "Used for consensus clustering, subtype DEG, markers, immune signatures and LASSO"),
+    stringsAsFactors = FALSE
+  )
+  save_table(report, file.path(cfg$output_dir, "tables", "analysis_sample_selection_report.csv"))
 }
 
 run_consensus <- function(expr, cfg) {
@@ -177,7 +210,7 @@ run_limma <- function(expr, subtype, cfg) {
     ggplot2::geom_text(data = top_label, ggplot2::aes(label = gene), size = 2.5, vjust = -0.4, check_overlap = TRUE, show.legend = FALSE) +
     ggplot2::theme_bw(base_size = 12) +
     ggplot2::theme(panel.grid.minor = ggplot2::element_blank(), plot.title = ggplot2::element_text(face = "bold")) +
-    ggplot2::labs(title = "Subtype differential expression", x = "log2 fold-change", y = "-log10(P)", color = "DEG class")
+    ggplot2::labs(title = "IgAN subtype differential expression", x = "log2 fold-change", y = "-log10(P)", color = "DEG class")
   ggplot2::ggsave(file.path(cfg$output_dir, "figures", "Figure3_volcano.pdf"), p, width = 7, height = 5)
   ggplot2::ggsave(file.path(cfg$output_dir, "figures", "Figure3_volcano_publication.pdf"), p, width = 7, height = 5)
 
