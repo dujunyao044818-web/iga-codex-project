@@ -1,0 +1,17 @@
+bulk_dataset: GSE104948
+random_seed: 1234
+cluster:
+  max_k: 4
+  reps: 50
+  p_item: 0.8
+  p_feature: 1.0
+deg:
+  adj_p_cutoff: 0.05
+  logfc_cutoff: 0.5
+signature:
+  top_n_per_subtype: 30
+single_cell:
+  enabled: true
+  mode: optional
+  note: "If no external scRNA input is available, the pipeline generates a lightweight single-cell-style module-score validation report from subtype marker genes so the workflow does not fail. Replace this section with a real kidney scRNA matrix later."
+output_dir: output
