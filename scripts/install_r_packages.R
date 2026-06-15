@@ -1,56 +1,65 @@
 #!/usr/bin/env Rscript
-# Robust lightweight installer for GitHub Actions.
-# Heavy single-cell / enrichment packages are optional and must not stop the workflow.
+
+# Lightweight dependency check for GitHub Actions.
+# Core Bioconductor packages should be installed by apt in the workflow,
+# so this script must NOT call BiocManager online.
+
 dir.create("output/logs", recursive = TRUE, showWarnings = FALSE)
+
 options(
   repos = c(CRAN = "https://packagemanager.posit.co/cran/latest"),
-  Ncpus = max(1L, parallel::detectCores() - 1L),
   timeout = 1200
 )
-Sys.setenv(
-  BIOCONDUCTOR_ONLINE_VERSION_DIAGNOSIS = "FALSE",
-  R_REMOTES_NO_ERRORS_FROM_WARNINGS = "true"
+
+cran_core <- c(
+  "yaml",
+  "ggplot2",
+  "pheatmap",
+  "matrixStats",
+  "reshape2",
+  "glmnet",
+  "data.table"
 )
 
-install_cran <- function(pkgs) {
+bioc_core <- c(
+  "GEOquery",
+  "Biobase",
+  "limma",
+  "ConsensusClusterPlus"
+)
+
+optional <- c(
+  "sva",
+  "GSVA",
+  "clusterProfiler",
+  "org.Hs.eg.db",
+  "msigdbr"
+)
+
+install_cran_if_missing <- function(pkgs) {
   missing <- pkgs[!vapply(pkgs, requireNamespace, logical(1), quietly = TRUE)]
   if (length(missing)) {
-    message("Installing CRAN packages: ", paste(missing, collapse = ", "))
-    install.packages(missing, dependencies = TRUE)
+    message("Installing missing CRAN packages: ", paste(missing, collapse = ", "))
+    try(install.packages(missing, dependencies = TRUE), silent = FALSE)
   }
 }
 
-install_bioc <- function(pkgs, required = TRUE) {
-  if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
-  missing <- pkgs[!vapply(pkgs, requireNamespace, logical(1), quietly = TRUE)]
-  if (!length(missing)) return(invisible(TRUE))
-  message("Installing Bioconductor packages: ", paste(missing, collapse = ", "))
-  ok <- tryCatch({
-    BiocManager::install(missing, ask = FALSE, update = FALSE, force = FALSE)
-    TRUE
-  }, error = function(e) {
-    message("Bioconductor install warning/error: ", conditionMessage(e))
-    FALSE
-  })
-  still_missing <- pkgs[!vapply(pkgs, requireNamespace, logical(1), quietly = TRUE)]
-  if (required && length(still_missing)) {
-    stop("Required packages still missing after installation: ", paste(still_missing, collapse = ", "))
-  }
-  if (!required && length(still_missing)) {
-    message("Optional packages still missing and will be skipped: ", paste(still_missing, collapse = ", "))
-  }
-  invisible(ok)
+install_cran_if_missing(cran_core)
+
+required <- c(cran_core, bioc_core)
+missing_required <- required[!vapply(required, requireNamespace, logical(1), quietly = TRUE)]
+
+if (length(missing_required)) {
+  stop(
+    "Required packages are still missing: ",
+    paste(missing_required, collapse = ", "),
+    "\nThese should be installed by apt-get in .github/workflows/run-iga-pipeline.yml."
+  )
 }
 
-required_cran <- c("yaml", "ggplot2", "pheatmap", "matrixStats", "reshape2", "glmnet", "data.table", "BiocManager")
-required_bioc <- c("GEOquery", "Biobase", "limma", "ConsensusClusterPlus")
-optional_bioc <- c("sva", "GSVA", "clusterProfiler", "org.Hs.eg.db")
-optional_cran <- c("msigdbr")
-# Seurat/tidyverse are intentionally not required for this bulk-first run.
-
-install_cran(required_cran)
-install_bioc(required_bioc, required = TRUE)
-try(install_cran(optional_cran), silent = TRUE)
-try(install_bioc(optional_bioc, required = FALSE), silent = TRUE)
+missing_optional <- optional[!vapply(optional, requireNamespace, logical(1), quietly = TRUE)]
+if (length(missing_optional)) {
+  message("Optional packages missing and will be skipped: ", paste(missing_optional, collapse = ", "))
+}
 
 writeLines(capture.output(sessionInfo()), "output/logs/r_session_info.txt")
