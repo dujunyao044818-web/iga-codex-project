@@ -11,15 +11,38 @@ load_bulk_gse <- function(cfg) {
   message(geo_id, " phenotype columns: ", paste(colnames(pheno), collapse = ", "))
   save_table(data.frame(column = colnames(pheno)), file.path(cfg$output_dir, "tables", "GSE104948_pData_columns.csv"))
 
+  original_n <- nrow(expr)
   gene_cols <- grep("symbol|gene", colnames(fdata), ignore.case = TRUE, value = TRUE)
+  selected_gene_col <- NA_character_
+  mapped_n <- 0
   if (length(gene_cols) > 0) {
-    gene_col <- gene_cols[1]
-    genes <- clean_gene_symbols(as.character(fdata[[gene_col]]))
-    keep <- !is.na(genes) & genes != "" & genes != "---"
-    expr <- expr[keep, , drop = FALSE]
-    genes <- genes[keep]
-    expr <- limma::avereps(expr, ID = genes)
+    best_score <- -1
+    for (gene_col in gene_cols) {
+      g <- clean_gene_symbols(as.character(fdata[[gene_col]]))
+      keep_tmp <- !is.na(g) & g != "" & g != "---"
+      score <- sum(keep_tmp)
+      if (score > best_score) {
+        best_score <- score
+        selected_gene_col <- gene_col
+        genes <- g
+        keep <- keep_tmp
+      }
+    }
+    if (best_score > 0) {
+      expr <- expr[keep, , drop = FALSE]
+      genes <- genes[keep]
+      mapped_n <- length(genes)
+      expr <- limma::avereps(expr, ID = genes)
+    }
   }
+  gene_report <- data.frame(
+    original_feature_count = original_n,
+    selected_gene_column = selected_gene_col,
+    mapped_feature_count = mapped_n,
+    final_gene_count = nrow(expr),
+    stringsAsFactors = FALSE
+  )
+  save_table(gene_report, file.path(cfg$output_dir, "tables", "gene_mapping_report.csv"))
 
   expr <- as.matrix(expr)
   mode(expr) <- "numeric"
@@ -41,24 +64,38 @@ metadata_text <- function(pheno, columns) {
 
 infer_bulk_groups <- function(pheno, cfg) {
   candidate_cols <- c("title", "source_name_ch1", "characteristics_ch1", "characteristics_ch1.1", "characteristics_ch1.2", "characteristics_ch1.3", "diagnosis", "disease", "tissue", "group")
+  present <- intersect(candidate_cols, colnames(pheno))
   txt <- tolower(metadata_text(pheno, candidate_cols))
+  all_txt <- tolower(metadata_text(pheno, colnames(pheno)))
   disease_pat <- paste(tolower(cfg$bulk$disease_terms), collapse = "|")
   control_pat <- paste(tolower(cfg$bulk$control_terms), collapse = "|")
   group <- rep("Unknown", length(txt))
-  group[grepl(control_pat, txt)] <- "Control"
-  group[grepl(disease_pat, txt)] <- "IgAN"
+  group[grepl(control_pat, txt) | grepl(control_pat, all_txt)] <- "Control"
+  group[grepl(disease_pat, txt) | grepl(disease_pat, all_txt)] <- "IgAN"
+  report <- data.frame(
+    sample = rownames(pheno),
+    detected_group = group,
+    used_columns = paste(present, collapse = ";"),
+    metadata_text = txt,
+    stringsAsFactors = FALSE
+  )
+  utils::write.csv(report, file.path("output", "tables", "sample_group_detection_report.csv"), row.names = FALSE)
   factor(group)
 }
 
 bulk_qc <- function(expr, pheno, group, cfg) {
   pca <- stats::prcomp(t(expr), scale. = TRUE)
   pct <- round(100 * (pca$sdev^2 / sum(pca$sdev^2))[1:2], 1)
-  df <- data.frame(sample = colnames(expr), PC1 = pca$x[, 1], PC2 = pca$x[, 2], group = group, stringsAsFactors = FALSE)
-  p <- ggplot2::ggplot(df, ggplot2::aes(PC1, PC2, color = group)) +
+  group_counts <- table(group)
+  group_label <- paste0(as.character(group), " (n=", as.integer(group_counts[as.character(group)]), ")")
+  df <- data.frame(sample = colnames(expr), PC1 = pca$x[, 1], PC2 = pca$x[, 2], group = group, group_label = group_label, stringsAsFactors = FALSE)
+  p <- ggplot2::ggplot(df, ggplot2::aes(PC1, PC2, color = group_label)) +
     ggplot2::geom_point(size = 3, alpha = 0.9) +
     ggplot2::theme_bw(base_size = 12) +
+    ggplot2::theme(panel.grid.minor = ggplot2::element_blank(), legend.title = ggplot2::element_text(face = "bold"), plot.title = ggplot2::element_text(face = "bold")) +
     ggplot2::labs(title = "GSE104948 annotated PCA", x = paste0("PC1 (", pct[1], "%)"), y = paste0("PC2 (", pct[2], "%)"), color = "Detected group")
   ggplot2::ggsave(file.path(cfg$output_dir, "figures", "Figure1_annotated_PCA.pdf"), p, width = 7, height = 5)
+  ggplot2::ggsave(file.path(cfg$output_dir, "figures", "Figure1_annotated_PCA_publication.pdf"), p, width = 7, height = 5)
   ann <- data.frame(sample = rownames(pheno), detected_group = as.character(group), pheno, check.names = FALSE)
   save_table(ann, file.path(cfg$output_dir, "tables", "sample_annotation_clean.csv"))
   save_table(df, file.path(cfg$output_dir, "tables", "bulk_pca_coordinates.csv"))
@@ -100,9 +137,36 @@ run_limma <- function(expr, subtype, cfg) {
   }
   deg$gene <- rownames(deg)
   utils::write.csv(deg, file.path(cfg$output_dir, "tables", "DEG_subtype_comparison.csv"), row.names = FALSE)
+
+  fdr_cut <- cfg$bulk$differential_expression$fdr_cutoff
+  logfc_cut <- cfg$bulk$differential_expression$logfc_cutoff
+  deg$status <- "Not significant"
+  deg$status[deg$adj.P.Val < fdr_cut & deg$logFC >= logfc_cut] <- "Upregulated"
+  deg$status[deg$adj.P.Val < fdr_cut & deg$logFC <= -logfc_cut] <- "Downregulated"
   deg$neglog10P <- -log10(pmax(deg$P.Value, 1e-300))
-  p <- ggplot2::ggplot(deg, ggplot2::aes(logFC, neglog10P)) + ggplot2::geom_point(alpha = 0.6, size = 1.2) + ggplot2::theme_bw(base_size = 12) + ggplot2::labs(title = "Subtype differential expression", x = "log2 fold-change", y = "-log10(P)")
+  summary_counts <- as.data.frame(table(deg$status), stringsAsFactors = FALSE)
+  colnames(summary_counts) <- c("status", "n_genes")
+  utils::write.csv(summary_counts, file.path(cfg$output_dir, "tables", "DEG_summary_counts.csv"), row.names = FALSE)
+
+  top_label <- head(deg[order(deg$adj.P.Val, decreasing = FALSE), ], 10)
+  p <- ggplot2::ggplot(deg, ggplot2::aes(logFC, neglog10P, color = status)) +
+    ggplot2::geom_point(alpha = 0.7, size = 1.3) +
+    ggplot2::geom_vline(xintercept = c(-logfc_cut, logfc_cut), linetype = "dashed") +
+    ggplot2::geom_hline(yintercept = -log10(fdr_cut), linetype = "dashed") +
+    ggplot2::geom_text(data = top_label, ggplot2::aes(label = gene), size = 2.5, vjust = -0.4, check_overlap = TRUE, show.legend = FALSE) +
+    ggplot2::theme_bw(base_size = 12) +
+    ggplot2::theme(panel.grid.minor = ggplot2::element_blank(), plot.title = ggplot2::element_text(face = "bold")) +
+    ggplot2::labs(title = "Subtype differential expression", x = "log2 fold-change", y = "-log10(P)", color = "DEG class")
   ggplot2::ggsave(file.path(cfg$output_dir, "figures", "Figure3_volcano.pdf"), p, width = 7, height = 5)
+  ggplot2::ggsave(file.path(cfg$output_dir, "figures", "Figure3_volcano_publication.pdf"), p, width = 7, height = 5)
+
+  top_heat <- head(deg$gene[order(deg$adj.P.Val, decreasing = FALSE)], 50)
+  top_heat <- intersect(top_heat, rownames(expr))
+  if (length(top_heat) >= 2) {
+    ann <- data.frame(Subtype = subtype)
+    rownames(ann) <- colnames(expr)
+    pheatmap::pheatmap(expr[top_heat, , drop = FALSE], scale = "row", annotation_col = ann, show_colnames = FALSE, show_rownames = TRUE, fontsize_row = 6, filename = file.path(cfg$output_dir, "figures", "Figure2_subtype_heatmap_publication.pdf"))
+  }
   deg
 }
 
