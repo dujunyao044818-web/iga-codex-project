@@ -17,6 +17,16 @@ bulk:
     fdr_cutoff: 0.05
   markers:
     top_n_per_subtype: 50
+external_validation:
+  enabled: true
+  min_igan_samples: 5
+  strategy: "signature_validation_not_direct_batch_merge"
+  description: "Use the GSE104948 small-cluster marker signature to screen external IgAN GEO datasets. Datasets that fail download, lack IgAN labels, or have poor gene overlap are recorded but skipped."
+  datasets:
+    - GSE37460
+    - GSE93798
+    - GSE116626
+    - GSE141295
 single_cell:
   geo_accession: GSE171314
   description: "Human kidney biopsy scRNA-seq from IgA nephropathy and control subjects"
