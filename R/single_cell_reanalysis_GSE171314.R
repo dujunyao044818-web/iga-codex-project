@@ -57,8 +57,6 @@ known_groups <- c(
   GSM5222734 = "Control"
 )
 
-module_score_name <- function(prefix) paste0(prefix, "1")
-
 infer_sample_id <- function(path) {
   base <- basename(path)
   m <- regmatches(base, regexpr("GSM[0-9]+", base))
@@ -95,9 +93,10 @@ read_expression_matrix <- function(path, gene_universe) {
     rownames(mat) <- genes
     colnames(mat) <- make.unique(colnames(dt)[-1])
   } else if (col_hits >= 3) {
-    mat <- t(as.matrix(dt[, toupper(make.names(cn, unique = FALSE)) %in% toupper(make.names(gene_universe, unique = FALSE)), drop = FALSE]))
+    keep <- toupper(make.names(cn, unique = FALSE)) %in% toupper(make.names(gene_universe, unique = FALSE))
+    mat <- t(as.matrix(dt[, keep, drop = FALSE]))
     suppressWarnings(storage.mode(mat) <- "numeric")
-    rownames(mat) <- clean_gene_names(colnames(dt)[toupper(make.names(cn, unique = FALSE)) %in% toupper(make.names(gene_universe, unique = FALSE))])
+    rownames(mat) <- clean_gene_names(colnames(dt)[keep])
     colnames(mat) <- make.unique(as.character(dt[[1]]))
   } else {
     stop("Could not detect gene-symbol orientation in ", basename(path))
@@ -110,12 +109,27 @@ read_expression_matrix <- function(path, gene_universe) {
   Matrix::Matrix(mat, sparse = TRUE)
 }
 
+# Seurat v5 can keep one count/data layer per sample after merging. AddModuleScore
+# calls GetAssayData(), which errors when an assay has multiple layers. Joining
+# layers before scoring makes this script compatible with SeuratObject v5 while
+# remaining harmless for older Seurat versions.
+join_layers_if_needed <- function(obj) {
+  if ("JoinLayers" %in% getNamespaceExports("SeuratObject")) {
+    obj <- tryCatch(SeuratObject::JoinLayers(obj), error = function(e) obj)
+  } else if ("JoinLayers" %in% getNamespaceExports("Seurat")) {
+    obj <- tryCatch(Seurat::JoinLayers(obj), error = function(e) obj)
+  }
+  obj
+}
+
 add_module_score_clean <- function(obj, modules) {
+  obj <- join_layers_if_needed(obj)
   for (nm in names(modules)) {
     genes <- intersect(modules[[nm]], rownames(obj))
     if (length(genes) >= 2) {
       obj <- Seurat::AddModuleScore(obj, features = list(genes), name = paste0(nm, "_"), search = FALSE)
-      obj[[nm]] <- obj[[module_score_name(paste0(nm, "_"))]][, 1]
+      score_col <- paste0(nm, "_1")
+      obj[[nm]] <- obj[[score_col]][, 1]
     } else {
       obj[[nm]] <- NA_real_
     }
@@ -166,26 +180,12 @@ if (length(objs) < 2) stop("Fewer than two usable sample objects were loaded; ca
 
 message("Merging Seurat objects")
 combined <- Reduce(function(x, y) merge(x, y), objs)
+combined <- join_layers_if_needed(combined)
 combined[["percent.mt"]] <- Seurat::PercentageFeatureSet(combined, pattern = "^MT-")
-qc_before <- data.frame(
-  sample_id = combined$sample_id,
-  sample_group = combined$sample_group,
-  nFeature_RNA = combined$nFeature_RNA,
-  nCount_RNA = combined$nCount_RNA,
-  percent.mt = combined$percent.mt
-)
+qc_before <- data.frame(sample_id = combined$sample_id, sample_group = combined$sample_group, nFeature_RNA = combined$nFeature_RNA, nCount_RNA = combined$nCount_RNA, percent.mt = combined$percent.mt)
 combined <- subset(combined, subset = nFeature_RNA >= 200 & nFeature_RNA <= 6500 & percent.mt <= 25)
-qc_after <- data.frame(
-  sample_id = combined$sample_id,
-  sample_group = combined$sample_group,
-  nFeature_RNA = combined$nFeature_RNA,
-  nCount_RNA = combined$nCount_RNA,
-  percent.mt = combined$percent.mt
-)
-qc_summary <- rbind(
-  data.frame(stage = "before_qc", aggregate(cbind(n_cells = nFeature_RNA, median_nFeature = nFeature_RNA, median_nCount = nCount_RNA, median_percent_mt = percent.mt) ~ sample_id + sample_group, qc_before, function(x) c(length = length(x), median = median(x))))[0, ],
-  data.frame(stage = character(), sample_id = character(), sample_group = character(), n_cells = numeric(), median_nFeature = numeric(), median_nCount = numeric(), median_percent_mt = numeric())
-)
+combined <- join_layers_if_needed(combined)
+qc_after <- data.frame(sample_id = combined$sample_id, sample_group = combined$sample_group, nFeature_RNA = combined$nFeature_RNA, nCount_RNA = combined$nCount_RNA, percent.mt = combined$percent.mt)
 make_qc <- function(df, stage) {
   do.call(rbind, lapply(split(df, df$sample_id), function(d) {
     data.frame(stage = stage, sample_id = d$sample_id[1], sample_group = d$sample_group[1], n_cells = nrow(d), median_nFeature = median(d$nFeature_RNA), median_nCount = median(d$nCount_RNA), median_percent_mt = median(d$percent.mt))
@@ -196,6 +196,7 @@ utils::write.csv(qc_summary, file.path(tables_dir, "sc_qc_summary.csv"), row.nam
 
 message("Running standard Seurat workflow")
 combined <- Seurat::NormalizeData(combined, verbose = FALSE)
+combined <- join_layers_if_needed(combined)
 combined <- Seurat::FindVariableFeatures(combined, selection.method = "vst", nfeatures = 2000, verbose = FALSE)
 combined <- Seurat::ScaleData(combined, verbose = FALSE)
 combined <- Seurat::RunPCA(combined, npcs = 30, verbose = FALSE)
@@ -242,16 +243,10 @@ for (sc in score_cols) {
     x <- meta[[sc]][meta$inferred_celltype == ct & meta$sample_group == "IgAN"]
     y <- meta[[sc]][meta$inferred_celltype == ct & meta$sample_group == "Control"]
     diff_rows[[length(diff_rows) + 1]] <- data.frame(
-      module = sc,
-      inferred_celltype = ct,
-      n_IgAN_cells = sum(is.finite(x)),
-      n_Control_cells = sum(is.finite(y)),
-      mean_IgAN = mean(x, na.rm = TRUE),
-      mean_Control = mean(y, na.rm = TRUE),
+      module = sc, inferred_celltype = ct, n_IgAN_cells = sum(is.finite(x)), n_Control_cells = sum(is.finite(y)),
+      mean_IgAN = mean(x, na.rm = TRUE), mean_Control = mean(y, na.rm = TRUE),
       mean_difference_IgAN_minus_Control = mean(x, na.rm = TRUE) - mean(y, na.rm = TRUE),
-      median_IgAN = median(x, na.rm = TRUE),
-      median_Control = median(y, na.rm = TRUE),
-      wilcox_p = wilcox_safe(x, y)
+      median_IgAN = median(x, na.rm = TRUE), median_Control = median(y, na.rm = TRUE), wilcox_p = wilcox_safe(x, y)
     )
   }
 }
@@ -278,42 +273,25 @@ utils::write.csv(candidate_summary, file.path(tables_dir, "sc_CERI_candidate_sou
 
 message("Writing figures")
 fig_width <- 7.2
-p_umap_ct <- Seurat::DimPlot(combined, reduction = "umap", group.by = "inferred_celltype", label = TRUE, repel = TRUE) +
-  ggplot2::theme_bw(base_size = 11) +
-  ggplot2::labs(title = "GSE171314 single-cell reanalysis: inferred cell types")
-ggplot2::ggsave(file.path(figures_dir, "Figure11_sc_UMAP_celltype.pdf"), p_umap_ct, width = fig_width, height = 5.8)
+p_umap_ct <- Seurat::DimPlot(combined, reduction = "umap", group.by = "inferred_celltype", label = TRUE, repel = TRUE) + theme_bw(base_size = 11) + labs(title = "GSE171314 single-cell reanalysis: inferred cell types")
+ggsave(file.path(figures_dir, "Figure11_sc_UMAP_celltype.pdf"), p_umap_ct, width = fig_width, height = 5.8)
 
-p_umap_group <- Seurat::DimPlot(combined, reduction = "umap", group.by = "sample_group") +
-  ggplot2::theme_bw(base_size = 11) +
-  ggplot2::labs(title = "GSE171314 single-cell reanalysis: IgAN vs control")
-ggplot2::ggsave(file.path(figures_dir, "Figure11b_sc_UMAP_group.pdf"), p_umap_group, width = fig_width, height = 5.2)
+p_umap_group <- Seurat::DimPlot(combined, reduction = "umap", group.by = "sample_group") + theme_bw(base_size = 11) + labs(title = "GSE171314 single-cell reanalysis: IgAN vs control")
+ggsave(file.path(figures_dir, "Figure11b_sc_UMAP_group.pdf"), p_umap_group, width = fig_width, height = 5.2)
 
-p_feat <- Seurat::FeaturePlot(combined, features = "CERI_composite_score", reduction = "umap") +
-  ggplot2::theme_bw(base_size = 11) +
-  ggplot2::labs(title = "CERI composite score on UMAP")
-ggplot2::ggsave(file.path(figures_dir, "Figure12_sc_CERI_score_umap.pdf"), p_feat, width = fig_width, height = 5.4)
+p_feat <- Seurat::FeaturePlot(combined, features = "CERI_composite_score", reduction = "umap") + theme_bw(base_size = 11) + labs(title = "CERI composite score on UMAP")
+ggsave(file.path(figures_dir, "Figure12_sc_CERI_score_umap.pdf"), p_feat, width = fig_width, height = 5.4)
 
 plot_df <- score_summary[score_summary$module == "CERI_composite_score", , drop = FALSE]
 ord <- aggregate(mean_score ~ inferred_celltype, plot_df, max, na.rm = TRUE)
 plot_df$inferred_celltype <- factor(plot_df$inferred_celltype, levels = ord$inferred_celltype[order(ord$mean_score, decreasing = TRUE)])
-p_bar <- ggplot2::ggplot(plot_df, ggplot2::aes(x = inferred_celltype, y = mean_score, fill = sample_group)) +
-  ggplot2::geom_col(position = ggplot2::position_dodge(width = 0.8), width = 0.72) +
-  ggplot2::geom_hline(yintercept = 0, linetype = "dashed", linewidth = 0.25) +
-  ggplot2::theme_bw(base_size = 11) +
-  ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 35, hjust = 1), panel.grid.minor = ggplot2::element_blank()) +
-  ggplot2::labs(title = "CERI score by inferred cell type and group", x = "Inferred cell type", y = "Mean CERI composite score", fill = "Group")
-ggplot2::ggsave(file.path(figures_dir, "Figure13_sc_CERI_by_celltype_group.pdf"), p_bar, width = 8.5, height = 5.4)
+p_bar <- ggplot(plot_df, aes(x = inferred_celltype, y = mean_score, fill = sample_group)) + geom_col(position = position_dodge(width = 0.8), width = 0.72) + geom_hline(yintercept = 0, linetype = "dashed", linewidth = 0.25) + theme_bw(base_size = 11) + theme(axis.text.x = element_text(angle = 35, hjust = 1), panel.grid.minor = element_blank()) + labs(title = "CERI score by inferred cell type and group", x = "Inferred cell type", y = "Mean CERI composite score", fill = "Group")
+ggsave(file.path(figures_dir, "Figure13_sc_CERI_by_celltype_group.pdf"), p_bar, width = 8.5, height = 5.4)
 
 sig_df <- diff_tbl[diff_tbl$module %in% c("CERI_composite_score", "Complement", "Myeloid_inflammation", "ECM_remodeling", "Podocyte_glomerular_structure"), , drop = FALSE]
 sig_df$inferred_celltype <- factor(sig_df$inferred_celltype, levels = levels(plot_df$inferred_celltype))
-p_diff <- ggplot2::ggplot(sig_df, ggplot2::aes(x = inferred_celltype, y = mean_difference_IgAN_minus_Control)) +
-  ggplot2::geom_hline(yintercept = 0, linetype = "dashed", linewidth = 0.25) +
-  ggplot2::geom_col(width = 0.7) +
-  ggplot2::facet_wrap(~module, scales = "free_y") +
-  ggplot2::theme_bw(base_size = 10.5) +
-  ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 40, hjust = 1), panel.grid.minor = ggplot2::element_blank()) +
-  ggplot2::labs(title = "IgAN-control module differences by inferred cell type", x = "Inferred cell type", y = "Mean difference: IgAN - Control")
-ggplot2::ggsave(file.path(figures_dir, "Figure14_sc_CERI_IgAN_vs_Control_by_celltype.pdf"), p_diff, width = 10, height = 6.2)
+p_diff <- ggplot(sig_df, aes(x = inferred_celltype, y = mean_difference_IgAN_minus_Control)) + geom_hline(yintercept = 0, linetype = "dashed", linewidth = 0.25) + geom_col(width = 0.7) + facet_wrap(~module, scales = "free_y") + theme_bw(base_size = 10.5) + theme(axis.text.x = element_text(angle = 40, hjust = 1), panel.grid.minor = element_blank()) + labs(title = "IgAN-control module differences by inferred cell type", x = "Inferred cell type", y = "Mean difference: IgAN - Control")
+ggsave(file.path(figures_dir, "Figure14_sc_CERI_IgAN_vs_Control_by_celltype.pdf"), p_diff, width = 10, height = 6.2)
 
 saveRDS(combined, file.path(out_dir, "GSE171314_seurat_CERI_reanalysis.rds"))
 message("Independent GSE171314 single-cell reanalysis completed.")
