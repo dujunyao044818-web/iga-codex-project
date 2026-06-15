@@ -153,13 +153,13 @@ run_single_cell <- function(markers, cfg) {
     "Unknown"
   }
 
+  sc_accession <- if (!is.null(cfg$single_cell$geo_accession) && nzchar(cfg$single_cell$geo_accession)) cfg$single_cell$geo_accession else "GSE171314"
   sc_status <- data.frame(
     item = c("dataset", "analysis_mode", "status"),
-    value = c(cfg$single_cell$geo_accession %||% "GSE171314", "lightweight processed-matrix module scoring without Seurat", "not_started"),
+    value = c(sc_accession, "lightweight processed-matrix module scoring without Seurat", "not_started"),
     stringsAsFactors = FALSE
   )
 
-  sc_accession <- if (!is.null(cfg$single_cell$geo_accession)) cfg$single_cell$geo_accession else "GSE171314"
   download_ok <- FALSE
   scores_all <- list()
   sample_summary <- list()
@@ -221,10 +221,6 @@ run_single_cell <- function(markers, cfg) {
     utils::write.csv(sc_scores, file.path(tables_dir, "single_cell_CERI_scores_per_cell.csv"), row.names = FALSE)
 
     score_cols <- intersect(c(names(ceri_modules), "CERI_composite_score"), colnames(sc_scores))
-    by_celltype <- do.call(rbind, lapply(score_cols, function(sc) {
-      aggregate(sc_scores[[sc]], by = list(inferred_celltype = sc_scores$inferred_celltype, sample_group = sc_scores$sample_group), FUN = function(x) c(n = length(x), mean = mean(x, na.rm = TRUE), median = stats::median(x, na.rm = TRUE)))
-    }))
-    # Rebuild summary in a clearer long format because aggregate with vector output can be awkward.
     rows <- list()
     for (sc in score_cols) {
       for (ct in unique(sc_scores$inferred_celltype)) {
