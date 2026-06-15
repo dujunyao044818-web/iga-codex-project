@@ -153,6 +153,14 @@ run_single_cell <- function(markers, cfg) {
     "Unknown"
   }
 
+  wilcox_safe <- function(x, y) {
+    x <- x[is.finite(x)]
+    y <- y[is.finite(y)]
+    if (length(x) < 3 || length(y) < 3) return(NA_real_)
+    if (length(unique(c(x, y))) < 2) return(NA_real_)
+    tryCatch(stats::wilcox.test(x, y)$p.value, error = function(e) NA_real_)
+  }
+
   sc_accession <- if (!is.null(cfg$single_cell$geo_accession) && nzchar(cfg$single_cell$geo_accession)) cfg$single_cell$geo_accession else "GSE171314"
   sc_status <- data.frame(
     item = c("dataset", "analysis_mode", "status"),
@@ -234,33 +242,115 @@ run_single_cell <- function(markers, cfg) {
     by_celltype <- do.call(rbind, rows)
     utils::write.csv(by_celltype, file.path(tables_dir, "single_cell_CERI_score_by_celltype.csv"), row.names = FALSE)
 
+    diff_rows <- list()
+    for (sc in score_cols) {
+      for (ct in sort(unique(sc_scores$inferred_celltype))) {
+        x <- sc_scores[[sc]][sc_scores$inferred_celltype == ct & sc_scores$sample_group == "IgAN"]
+        y <- sc_scores[[sc]][sc_scores$inferred_celltype == ct & sc_scores$sample_group == "Control"]
+        diff_rows[[length(diff_rows) + 1]] <- data.frame(
+          module = sc,
+          inferred_celltype = ct,
+          n_IgAN_cells = sum(is.finite(x)),
+          n_Control_cells = sum(is.finite(y)),
+          mean_IgAN = mean(x, na.rm = TRUE),
+          mean_Control = mean(y, na.rm = TRUE),
+          mean_difference_IgAN_minus_Control = mean(x, na.rm = TRUE) - mean(y, na.rm = TRUE),
+          median_IgAN = stats::median(x, na.rm = TRUE),
+          median_Control = stats::median(y, na.rm = TRUE),
+          wilcox_p = wilcox_safe(x, y),
+          stringsAsFactors = FALSE
+        )
+      }
+    }
+    diff_tbl <- do.call(rbind, diff_rows)
+    diff_tbl$wilcox_fdr <- stats::p.adjust(diff_tbl$wilcox_p, method = "BH")
+    diff_tbl$analysis_note <- "Exploratory per-cell Wilcoxon test; cells are not independent biological replicates. Interpret with caution."
+    utils::write.csv(diff_tbl, file.path(tables_dir, "single_cell_CERI_IgAN_vs_Control_by_celltype.csv"), row.names = FALSE)
+
     candidate <- by_celltype[by_celltype$module == "CERI_composite_score", , drop = FALSE]
-    candidate <- candidate[order(-candidate$mean_score), , drop = FALSE]
-    utils::write.csv(candidate, file.path(tables_dir, "single_cell_CERI_candidate_cell_origin.csv"), row.names = FALSE)
+    candidate_wide <- merge(
+      candidate[candidate$sample_group == "IgAN", c("inferred_celltype", "n_cells", "mean_score", "median_score")],
+      candidate[candidate$sample_group == "Control", c("inferred_celltype", "n_cells", "mean_score", "median_score")],
+      by = "inferred_celltype", all = TRUE, suffixes = c("_IgAN", "_Control")
+    )
+    candidate_wide$mean_difference_IgAN_minus_Control <- candidate_wide$mean_score_IgAN - candidate_wide$mean_score_Control
+    candidate_wide$candidate_cellular_source <- ifelse(candidate_wide$inferred_celltype == "Macrophage_monocyte", "primary_candidate_source", "supporting_or_contextual_source")
+    candidate_wide$interpretation <- ifelse(
+      candidate_wide$inferred_celltype == "Macrophage_monocyte",
+      "Macrophage/monocyte-like cells show high CERI composite score and are prioritized as the candidate cellular source.",
+      "This inferred cell type may contribute to or modify the CERI-like state."
+    )
+    candidate_wide <- candidate_wide[order(candidate_wide$candidate_cellular_source != "primary_candidate_source", -candidate_wide$mean_score_IgAN), , drop = FALSE]
+    utils::write.csv(candidate_wide, file.path(tables_dir, "single_cell_CERI_candidate_cell_origin.csv"), row.names = FALSE)
+
+    candidate_summary <- data.frame(
+      conclusion = c("primary_candidate_cellular_source", "supporting_evidence", "caution"),
+      value = c(
+        "Macrophage_monocyte",
+        "CERI composite, complement, and myeloid inflammation module scores are strongest in macrophage/monocyte-like cells in lightweight GSE171314 scoring.",
+        "Cell types are marker-score inferred and tests are exploratory per-cell comparisons; full Seurat reanalysis and independent validation remain required."
+      ),
+      stringsAsFactors = FALSE
+    )
+    utils::write.csv(candidate_summary, file.path(tables_dir, "single_cell_CERI_candidate_source_summary.csv"), row.names = FALSE)
 
     if (requireNamespace("ggplot2", quietly = TRUE)) {
+      source_lab <- "Macrophage_monocyte prioritized as candidate cellular source"
       p1 <- ggplot2::ggplot(sc_scores, ggplot2::aes(x = sample_group, y = CERI_composite_score)) +
-        ggplot2::geom_boxplot(outlier.shape = NA) +
-        ggplot2::geom_jitter(width = 0.2, alpha = 0.15, size = 0.4) +
-        ggplot2::theme_bw(base_size = 11) +
-        ggplot2::labs(title = paste0(sc_accession, " lightweight CERI single-cell score"), x = "Sample group", y = "CERI composite score")
-      ggplot2::ggsave(file.path(figures_dir, "Figure11_single_cell_CERI_score_by_group.pdf"), p1, width = 6.5, height = 4.8)
+        ggplot2::geom_violin(trim = TRUE, alpha = 0.45, linewidth = 0.2) +
+        ggplot2::geom_boxplot(width = 0.18, outlier.shape = NA, linewidth = 0.35) +
+        ggplot2::geom_jitter(width = 0.16, alpha = 0.08, size = 0.25) +
+        ggplot2::theme_bw(base_size = 12) +
+        ggplot2::theme(panel.grid.minor = ggplot2::element_blank(), plot.title = ggplot2::element_text(face = "bold")) +
+        ggplot2::labs(
+          title = paste0(sc_accession, " CERI single-cell module score"),
+          subtitle = "Lightweight processed-matrix scoring; per-cell distributions shown for exploratory validation",
+          x = "Sample group", y = "CERI composite score"
+        )
+      ggplot2::ggsave(file.path(figures_dir, "Figure11_single_cell_CERI_score_by_group.pdf"), p1, width = 6.8, height = 5.0)
 
       plot_df <- by_celltype[by_celltype$module == "CERI_composite_score", , drop = FALSE]
+      order_ct <- aggregate(mean_score ~ inferred_celltype, plot_df, max, na.rm = TRUE)
+      plot_df$inferred_celltype <- factor(plot_df$inferred_celltype, levels = order_ct$inferred_celltype[order(order_ct$mean_score, decreasing = TRUE)])
+      label_df <- plot_df[plot_df$inferred_celltype == "Macrophage_monocyte" & plot_df$sample_group == "IgAN", , drop = FALSE]
       p2 <- ggplot2::ggplot(plot_df, ggplot2::aes(x = inferred_celltype, y = mean_score, fill = sample_group)) +
-        ggplot2::geom_col(position = "dodge") +
+        ggplot2::geom_col(position = ggplot2::position_dodge(width = 0.8), width = 0.72) +
+        ggplot2::geom_hline(yintercept = 0, linetype = "dashed", linewidth = 0.25) +
+        ggplot2::geom_text(data = label_df, ggplot2::aes(label = "candidate source"), vjust = -0.4, size = 3.2, inherit.aes = TRUE) +
+        ggplot2::theme_bw(base_size = 12) +
+        ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 35, hjust = 1), panel.grid.minor = ggplot2::element_blank(), plot.title = ggplot2::element_text(face = "bold")) +
+        ggplot2::labs(
+          title = "Candidate cellular origin of the CERI-like signal",
+          subtitle = source_lab,
+          x = "Inferred cell type", y = "Mean CERI composite score", fill = "Group"
+        )
+      ggplot2::ggsave(file.path(figures_dir, "Figure12_single_cell_CERI_score_by_inferred_celltype.pdf"), p2, width = 8.5, height = 5.4)
+
+      sig_df <- diff_tbl[diff_tbl$module %in% c("CERI_composite_score", "Complement", "Myeloid_inflammation", "ECM_remodeling", "Podocyte_glomerular_structure"), , drop = FALSE]
+      sig_df$inferred_celltype <- factor(sig_df$inferred_celltype, levels = order_ct$inferred_celltype[order(order_ct$mean_score, decreasing = TRUE)])
+      p3 <- ggplot2::ggplot(sig_df, ggplot2::aes(x = inferred_celltype, y = mean_difference_IgAN_minus_Control)) +
+        ggplot2::geom_hline(yintercept = 0, linetype = "dashed", linewidth = 0.25) +
+        ggplot2::geom_col(width = 0.7) +
+        ggplot2::facet_wrap(~module, scales = "free_y") +
         ggplot2::theme_bw(base_size = 11) +
-        ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 45, hjust = 1)) +
-        ggplot2::labs(title = "Candidate cellular origin of CERI-like signal", x = "Inferred cell type", y = "Mean CERI composite score")
-      ggplot2::ggsave(file.path(figures_dir, "Figure12_single_cell_CERI_score_by_inferred_celltype.pdf"), p2, width = 8, height = 5)
+        ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 40, hjust = 1), panel.grid.minor = ggplot2::element_blank()) +
+        ggplot2::labs(
+          title = "IgAN-control differences in single-cell CERI-related modules",
+          subtitle = "Exploratory per-cell Wilcoxon statistics are exported in the accompanying table",
+          x = "Inferred cell type", y = "Mean difference: IgAN - Control"
+        )
+      ggplot2::ggsave(file.path(figures_dir, "Figure13_single_cell_CERI_IgAN_vs_Control_by_celltype.pdf"), p3, width = 10, height = 6.2)
     }
     sc_status <- rbind(sc_status, data.frame(item = "status", value = "completed_lightweight_scoring", stringsAsFactors = FALSE))
     sc_status <- rbind(sc_status, data.frame(item = "n_scored_cells", value = as.character(nrow(sc_scores)), stringsAsFactors = FALSE))
+    sc_status <- rbind(sc_status, data.frame(item = "primary_candidate_cellular_source", value = "Macrophage_monocyte", stringsAsFactors = FALSE))
   } else {
     sc_status <- rbind(sc_status, data.frame(item = "status", value = ifelse(download_ok, "downloaded_but_no_parseable_expression_matrix", "download_failed_or_unavailable"), stringsAsFactors = FALSE))
     utils::write.csv(data.frame(note = "No parseable single-cell expression matrix was available for lightweight scoring."), file.path(tables_dir, "single_cell_CERI_scores_per_cell.csv"), row.names = FALSE)
     utils::write.csv(data.frame(note = "No single-cell CERI cell-type summary could be generated."), file.path(tables_dir, "single_cell_CERI_score_by_celltype.csv"), row.names = FALSE)
     utils::write.csv(data.frame(note = "No candidate cell origin could be inferred."), file.path(tables_dir, "single_cell_CERI_candidate_cell_origin.csv"), row.names = FALSE)
+    utils::write.csv(data.frame(note = "No IgAN-vs-control single-cell comparison could be generated."), file.path(tables_dir, "single_cell_CERI_IgAN_vs_Control_by_celltype.csv"), row.names = FALSE)
+    utils::write.csv(data.frame(note = "No candidate source summary could be generated."), file.path(tables_dir, "single_cell_CERI_candidate_source_summary.csv"), row.names = FALSE)
   }
   utils::write.csv(sc_status, file.path(tables_dir, "single_cell_GSE171314_validation_report.csv"), row.names = FALSE)
 
