@@ -8,6 +8,7 @@ source("R/functional_modeling.R")
 source("R/single_cell_analysis.R")
 source("R/subtype_interpretation.R")
 source("R/external_igan_validation.R")
+source("R/final_summary_figures.R")
 
 cfg <- yaml::read_yaml("config/pipeline.yml")
 set.seed(cfg$seed)
@@ -53,8 +54,9 @@ deg <- log_step("IgAN subtype limma differential expression", run_limma(igan_exp
 markers <- log_step("IgAN subtype marker export", get_subtype_markers(deg, cfg))
 log_step("IgAN subtype interpretation and QC", run_subtype_interpretation_qc(cfg), required = FALSE)
 log_step("External IgAN signature validation", run_external_igan_validation(cfg), required = FALSE)
+log_step("Final summary figures and mechanism model", run_final_summary_figures(cfg), required = FALSE)
 log_step("IgAN Hallmark GSVA and immune signatures", run_functional(igan_expr, subtype, cfg), required = FALSE)
 log_step("IgAN LASSO subtype model", run_lasso(igan_expr, subtype, markers, cfg), required = FALSE)
-log_step("Single-cell validation", run_single_cell(markers, cfg), required = FALSE)
+log_step("Single-cell and spatial validation planning", run_single_cell(markers, cfg), required = FALSE)
 
 message("Pipeline complete. Outputs written to ", normalizePath(cfg$output_dir))
