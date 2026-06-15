@@ -171,9 +171,11 @@ run_external_igan_validation <- function(cfg) {
         if (sum(labels == "IgAN", na.rm = TRUE) < ext_cfg$min_igan_samples) status <- "too_few_igan_samples"
 
         if (status == "usable") {
-          z <- zscore_rows(expr[unique(c(common_all, unlist(curated_gene_sets))), , drop = FALSE])
-          up_score <- if (length(common_up) > 0) colMeans(z[common_up, , drop = FALSE], na.rm = TRUE) else rep(NA_real_, ncol(z))
-          down_score <- if (length(common_down) > 0) colMeans(z[common_down, , drop = FALSE], na.rm = TRUE) else rep(0, ncol(z))
+          gene_universe <- intersect(unique(c(common_all, unlist(curated_gene_sets))), rownames(expr))
+          if (length(gene_universe) < 3) stop("Too few genes available for external signature scoring after gene-universe filtering")
+          z <- zscore_rows(expr[gene_universe, , drop = FALSE])
+          up_score <- if (length(common_up) > 0) colMeans(z[intersect(common_up, rownames(z)), , drop = FALSE], na.rm = TRUE) else rep(NA_real_, ncol(z))
+          down_score <- if (length(common_down) > 0) colMeans(z[intersect(common_down, rownames(z)), , drop = FALSE], na.rm = TRUE) else rep(0, ncol(z))
           small_cluster_score <- up_score - down_score
           score_df <- data.frame(
             dataset = gse,
