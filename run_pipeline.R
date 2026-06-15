@@ -26,7 +26,7 @@ log_step <- function(label, expr, required = TRUE) {
   out
 }
 
-ensure_packages(c("GEOquery", "Biobase", "limma", "sva", "matrixStats", "ConsensusClusterPlus", "msigdbr", "pheatmap", "reshape2", "glmnet", "Seurat", "tidyverse", "clusterProfiler", "org.Hs.eg.db", "yaml", "data.table"))
+ensure_packages(c("GEOquery", "Biobase", "limma", "matrixStats", "ConsensusClusterPlus", "pheatmap", "reshape2", "glmnet", "yaml", "data.table"))
 
 bulk <- log_step("Download and preprocess GSE104948", load_bulk_gse(cfg))
 group <- log_step("Detect sample groups from phenotype metadata", infer_bulk_groups(bulk$pheno, cfg), required = FALSE)
