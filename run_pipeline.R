@@ -12,9 +12,14 @@ set.seed(cfg$seed)
 make_dirs(cfg)
 dir.create(file.path(cfg$output_dir, "logs"), recursive = TRUE, showWarnings = FALSE)
 log_file <- file.path(cfg$output_dir, "logs", "pipeline.log")
-sink(log_file, split = TRUE)
-sink(log_file, type = "message", append = TRUE)
-on.exit({ sink(type = "message"); sink() }, add = TRUE)
+log_con <- file(log_file, open = "at")
+sink(log_con, split = TRUE)
+sink(log_con, type = "message")
+on.exit({
+  try(sink(type = "message"), silent = TRUE)
+  try(sink(), silent = TRUE)
+  try(close(log_con), silent = TRUE)
+}, add = TRUE)
 
 log_step <- function(label, expr, required = TRUE) {
   message("[", Sys.time(), "] START: ", label)
