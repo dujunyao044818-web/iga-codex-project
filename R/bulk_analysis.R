@@ -63,20 +63,41 @@ metadata_text <- function(pheno, columns) {
 }
 
 infer_bulk_groups <- function(pheno, cfg) {
-  candidate_cols <- c("title", "source_name_ch1", "characteristics_ch1", "characteristics_ch1.1", "characteristics_ch1.2", "characteristics_ch1.3", "diagnosis", "disease", "tissue", "group")
-  present <- intersect(candidate_cols, colnames(pheno))
-  txt <- tolower(metadata_text(pheno, candidate_cols))
-  all_txt <- tolower(metadata_text(pheno, colnames(pheno)))
-  disease_pat <- paste(tolower(cfg$bulk$disease_terms), collapse = "|")
-  control_pat <- paste(tolower(cfg$bulk$control_terms), collapse = "|")
-  group <- rep("Unknown", length(txt))
-  group[grepl(control_pat, txt) | grepl(control_pat, all_txt)] <- "Control"
-  group[grepl(disease_pat, txt) | grepl(disease_pat, all_txt)] <- "IgAN"
+  # GSE104948 has an exact diagnosis column named diagnosis:ch1.
+  # Use this column first. Do not search all metadata fields because shared
+  # series-level descriptions can incorrectly label every sample as IgAN.
+  diagnosis_col <- intersect(c("diagnosis:ch1", "diagnosis", "disease", "group"), colnames(pheno))[1]
+  if (!is.na(diagnosis_col)) {
+    diagnosis_raw <- as.character(pheno[[diagnosis_col]])
+    group <- diagnosis_raw
+    group[is.na(group) | group == ""] <- "Unknown"
+    group[group == "IgA Nephropathy"] <- "IgAN"
+    group[group == "Systemic Lupus Erythematosus"] <- "SLE"
+    group[group == "Membranous Glomerulonephropathy"] <- "MGN"
+    group[group == "Hypertensive Nephropathy"] <- "HTN nephropathy"
+    group[group == "Minimal Change Disease"] <- "MCD"
+    group[group == "Focal Segmental Glomerular Sclerosis"] <- "FSGS"
+    group[group == "Diabetic Nephropathy"] <- "DN"
+    group[group == "Thin Membrande Disease"] <- "TMD"
+    group[group == "Tumor Nephrectomy"] <- "Tumor nephrectomy"
+    method <- paste0("exact diagnosis column: ", diagnosis_col)
+  } else {
+    candidate_cols <- c("title", "source_name_ch1", "characteristics_ch1", "characteristics_ch1.1", "characteristics_ch1.2", "characteristics_ch1.3")
+    txt <- tolower(metadata_text(pheno, candidate_cols))
+    disease_pat <- paste(tolower(cfg$bulk$disease_terms), collapse = "|")
+    control_pat <- paste(tolower(cfg$bulk$control_terms), collapse = "|")
+    group <- rep("Unknown", length(txt))
+    group[grepl(control_pat, txt)] <- "Control"
+    group[grepl(disease_pat, txt)] <- "IgAN"
+    diagnosis_raw <- NA_character_
+    method <- paste0("fallback keyword columns: ", paste(intersect(candidate_cols, colnames(pheno)), collapse = ";"))
+  }
+
   report <- data.frame(
     sample = rownames(pheno),
     detected_group = group,
-    used_columns = paste(present, collapse = ";"),
-    metadata_text = txt,
+    diagnosis_raw = diagnosis_raw,
+    method = method,
     stringsAsFactors = FALSE
   )
   utils::write.csv(report, file.path("output", "tables", "sample_group_detection_report.csv"), row.names = FALSE)
@@ -93,9 +114,9 @@ bulk_qc <- function(expr, pheno, group, cfg) {
     ggplot2::geom_point(size = 3, alpha = 0.9) +
     ggplot2::theme_bw(base_size = 12) +
     ggplot2::theme(panel.grid.minor = ggplot2::element_blank(), legend.title = ggplot2::element_text(face = "bold"), plot.title = ggplot2::element_text(face = "bold")) +
-    ggplot2::labs(title = "GSE104948 annotated PCA", x = paste0("PC1 (", pct[1], "%)"), y = paste0("PC2 (", pct[2], "%)"), color = "Detected group")
-  ggplot2::ggsave(file.path(cfg$output_dir, "figures", "Figure1_annotated_PCA.pdf"), p, width = 7, height = 5)
-  ggplot2::ggsave(file.path(cfg$output_dir, "figures", "Figure1_annotated_PCA_publication.pdf"), p, width = 7, height = 5)
+    ggplot2::labs(title = "GSE104948 annotated PCA", x = paste0("PC1 (", pct[1], "%)"), y = paste0("PC2 (", pct[2], "%)"), color = "Diagnosis group")
+  ggplot2::ggsave(file.path(cfg$output_dir, "figures", "Figure1_annotated_PCA.pdf"), p, width = 8, height = 5.5)
+  ggplot2::ggsave(file.path(cfg$output_dir, "figures", "Figure1_annotated_PCA_publication.pdf"), p, width = 8, height = 5.5)
   ann <- data.frame(sample = rownames(pheno), detected_group = as.character(group), pheno, check.names = FALSE)
   save_table(ann, file.path(cfg$output_dir, "tables", "sample_annotation_clean.csv"))
   save_table(df, file.path(cfg$output_dir, "tables", "bulk_pca_coordinates.csv"))
