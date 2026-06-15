@@ -49,7 +49,9 @@ jobs:
             r-bioc-geoquery \
             r-bioc-biobase \
             r-bioc-limma \
-            r-bioc-consensusclusterplus
+            r-bioc-consensusclusterplus \
+            r-bioc-annotationdbi \
+            r-bioc-org.hs.eg.db
 
       - name: Verify R package dependencies
         run: |
