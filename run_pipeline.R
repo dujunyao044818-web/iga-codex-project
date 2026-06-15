@@ -1,44 +1,42 @@
-dir.create("output/figures", recursive = TRUE, showWarnings = FALSE)
-dir.create("output/tables", recursive = TRUE, showWarnings = FALSE)
-dir.create("output/models", recursive = TRUE, showWarnings = FALSE)
-dir.create("output/logs", recursive = TRUE, showWarnings = FALSE)
-
-writeLines("IgA pipeline started", "output/logs/pipeline.log")
-
+#!/usr/bin/env Rscript
 suppressPackageStartupMessages({
-  library(GEOquery)
-  library(limma)
-  library(ggplot2)
+  library(yaml)
 })
+source("R/utils.R")
+source("R/bulk_analysis.R")
+source("R/functional_modeling.R")
+source("R/single_cell_analysis.R")
 
-gset <- GEOquery::getGEO("GSE104948", GSEMatrix = TRUE)
-g <- gset[[1]]
+cfg <- yaml::read_yaml("config/pipeline.yml")
+set.seed(cfg$seed)
+make_dirs(cfg)
+dir.create(file.path(cfg$output_dir, "logs"), recursive = TRUE, showWarnings = FALSE)
+log_file <- file.path(cfg$output_dir, "logs", "pipeline.log")
+sink(log_file, split = TRUE)
+sink(log_file, type = "message", append = TRUE)
+on.exit({ sink(type = "message"); sink() }, add = TRUE)
 
-expr <- Biobase::exprs(g)
-pdata <- Biobase::pData(g)
-
-if (max(expr, na.rm = TRUE) > 50) {
-  expr <- log2(expr + 1)
+log_step <- function(label, expr, required = TRUE) {
+  message("[", Sys.time(), "] START: ", label)
+  out <- tryCatch(force(expr), error = function(e) {
+    message("[", Sys.time(), "] ERROR in ", label, ": ", conditionMessage(e))
+    if (required) stop(e) else NULL
+  })
+  message("[", Sys.time(), "] END: ", label)
+  out
 }
 
-expr <- limma::normalizeBetweenArrays(expr)
+ensure_packages(c("GEOquery", "Biobase", "limma", "sva", "matrixStats", "ConsensusClusterPlus", "msigdbr", "pheatmap", "reshape2", "glmnet", "Seurat", "tidyverse", "clusterProfiler", "org.Hs.eg.db", "yaml", "data.table"))
 
-write.csv(expr, "output/tables/GSE104948_expression_matrix.csv")
-write.csv(pdata, "output/tables/GSE104948_sample_metadata.csv")
+bulk <- log_step("Download and preprocess GSE104948", load_bulk_gse(cfg))
+group <- log_step("Detect sample groups from phenotype metadata", infer_bulk_groups(bulk$pheno, cfg), required = FALSE)
+if (is.null(group)) group <- factor(rep("Unknown", ncol(bulk$expr)))
+log_step("Annotated PCA and sample annotation export", bulk_qc(bulk$expr, bulk$pheno, group, cfg))
+subtype <- log_step("Consensus clustering k=2..4", run_consensus(bulk$expr, cfg))
+deg <- log_step("limma subtype differential expression", run_limma(bulk$expr, subtype, cfg))
+markers <- log_step("Subtype marker export", get_subtype_markers(deg, cfg))
+log_step("Hallmark GSVA and immune signatures", run_functional(bulk$expr, subtype, cfg), required = FALSE)
+log_step("LASSO subtype model", run_lasso(bulk$expr, subtype, markers, cfg), required = FALSE)
+log_step("Single-cell validation", run_single_cell(markers, cfg), required = FALSE)
 
-pca <- prcomp(t(expr), scale. = TRUE)
-pca_df <- data.frame(
-  sample = rownames(pca$x),
-  PC1 = pca$x[, 1],
-  PC2 = pca$x[, 2]
-)
-
-p <- ggplot(pca_df, aes(PC1, PC2)) +
-  geom_point(size = 3) +
-  theme_bw() +
-  labs(title = "GSE104948 PCA")
-
-ggsave("output/figures/Figure1_PCA.pdf", p, width = 7, height = 5)
-
-writeLines(capture.output(sessionInfo()), "output/logs/sessionInfo.txt")
-writeLines("IgA pipeline completed", "output/logs/pipeline.log")
+message("Pipeline complete. Outputs written to ", normalizePath(cfg$output_dir))
