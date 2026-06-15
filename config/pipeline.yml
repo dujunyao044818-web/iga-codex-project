@@ -1,0 +1,32 @@
+project: iga_nephropathy_subtyping
+seed: 104948
+output_dir: output
+bulk:
+  geo_accession: GSE104948
+  disease_terms: ["iga", "igan", "iga nephropathy"]
+  control_terms: ["control", "healthy", "living donor", "normal"]
+  min_samples_per_group: 2
+  consensus:
+    max_k: 4
+    reps: 100
+    p_item: 0.8
+    p_feature: 0.8
+    max_genes: 2000
+  differential_expression:
+    logfc_cutoff: 0.5
+    fdr_cutoff: 0.05
+  markers:
+    top_n_per_subtype: 50
+single_cell:
+  geo_accession: GSE171314
+  description: "Human kidney biopsy scRNA-seq from IgA nephropathy and control subjects"
+  max_cells: 50000
+  min_features: 200
+  max_features: 6000
+  max_percent_mt: 25
+  resolution: 0.5
+  dims: 30
+  sct_method: vst
+lasso:
+  alpha: 1
+  nfolds: 5
