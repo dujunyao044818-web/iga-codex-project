@@ -53,6 +53,40 @@ jobs:
             r-bioc-annotationdbi \
             r-bioc-org.hs.eg.db
 
+      - name: Install optional enrichment R packages from apt when available
+        run: |
+          set -u
+          OPTIONAL_APT_PACKAGES=(
+            r-bioc-clusterprofiler
+            r-bioc-reactomepa
+            r-bioc-enrichplot
+            r-bioc-dose
+            r-bioc-annotationdbi
+            r-bioc-org.hs.eg.db
+            r-cran-msigdbr
+          )
+          AVAILABLE_PACKAGES=()
+          UNAVAILABLE_PACKAGES=()
+          for pkg in "${OPTIONAL_APT_PACKAGES[@]}"; do
+            if apt-cache show "$pkg" >/dev/null 2>&1; then
+              AVAILABLE_PACKAGES+=("$pkg")
+            else
+              UNAVAILABLE_PACKAGES+=("$pkg")
+            fi
+          done
+          if [ "${#AVAILABLE_PACKAGES[@]}" -gt 0 ]; then
+            echo "Installing optional apt packages: ${AVAILABLE_PACKAGES[*]}"
+            if ! sudo apt-get install -y --no-install-recommends "${AVAILABLE_PACKAGES[@]}"; then
+              echo "::warning::Optional apt enrichment package installation failed; scripts/install_r_packages.R will retry from CRAN/Bioconductor."
+            fi
+          else
+            echo "No optional enrichment apt packages are available on this runner."
+          fi
+          if [ "${#UNAVAILABLE_PACKAGES[@]}" -gt 0 ]; then
+            echo "Optional apt packages unavailable: ${UNAVAILABLE_PACKAGES[*]}"
+          fi
+          echo "Optional apt package availability check complete."
+
       - name: Verify R package dependencies
         run: |
           Rscript ./scripts/install_r_packages.R
