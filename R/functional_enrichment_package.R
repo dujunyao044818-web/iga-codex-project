@@ -75,7 +75,9 @@ run_functional_enrichment_package <- function(cfg) {
   })
   if (is.null(deg)) return(invisible(NULL))
   cut <- cfg$bulk$differential_expression
-  genes <- split_deg_genes(deg, logfc_cutoff = cut$logfc_cutoff %||% 0.5, fdr_cutoff = cut$fdr_cutoff %||% 0.05)
+  logfc_cutoff <- if (!is.null(cut$logfc_cutoff)) cut$logfc_cutoff else 0.5
+  fdr_cutoff <- if (!is.null(cut$fdr_cutoff)) cut$fdr_cutoff else 0.05
+  genes <- split_deg_genes(deg, logfc_cutoff = logfc_cutoff, fdr_cutoff = fdr_cutoff)
   statuses <- list()
   statuses$GO_BP_Up <- write_placeholder_enrichment("GO_BP", "Up", genes$up, cfg, "GO Biological Process enrichment placeholder. Install clusterProfiler/org.Hs.eg.db for full enrichment.")
   statuses$GO_BP_Down <- write_placeholder_enrichment("GO_BP", "Down", genes$down, cfg, "GO Biological Process enrichment placeholder. Install clusterProfiler/org.Hs.eg.db for full enrichment.")
