@@ -11,6 +11,19 @@ run_external_bulk_ml <- function(cfg) {
   add_note <- function(x) notes <<- c(notes, x)
   safe_csv <- function(x, path) tryCatch(utils::write.csv(x, path, row.names = FALSE), error = function(e) add_note(paste("Could not write", basename(path), conditionMessage(e))))
   safe_ggsave <- function(path, plot, width = 6, height = 5) tryCatch({ ggplot2::ggsave(path, plot, width = width, height = height); TRUE }, error = function(e) { add_note(paste("Skipped figure", basename(path), conditionMessage(e))); FALSE })
+  bind_rows_fill <- function(rows) {
+    if (length(rows) == 0) return(data.frame())
+    all_cols <- unique(unlist(lapply(rows, names)))
+    rows <- lapply(rows, function(x) {
+      missing <- setdiff(all_cols, names(x))
+      for (m in missing) x[[m]] <- NA
+      x[, all_cols, drop = FALSE]
+    })
+    do.call(rbind, rows)
+  }
+  add_model_row <- function(dataset, model, threshold = "median", n = NA_integer_, n_high = NA_integer_, n_low = NA_integer_, n_features = NA_integer_, status = "skipped", reason = "", auc = NA_real_, accuracy_at_0_5 = NA_real_) {
+    data.frame(dataset = dataset, model = model, threshold = threshold, n = n, n_high = n_high, n_low = n_low, n_features = n_features, status = status, reason = reason, auc = auc, accuracy_at_0_5 = accuracy_at_0_5, stringsAsFactors = FALSE)
+  }
   auc_rank <- function(y, score) {
     y <- as.integer(y)
     ok <- is.finite(score) & !is.na(y)
@@ -36,7 +49,7 @@ run_external_bulk_ml <- function(cfg) {
   if (!file.exists(score_file) || !file.exists(pathway_file)) {
     msg <- "External bulk ML skipped because external validation score/pathway tables are not available. Run external validation first."
     writeLines(c("# External bulk ML report", "", msg), file.path(rep_dir, "ml_external_bulk_report.md"))
-    safe_csv(data.frame(status = "skipped", reason = msg), file.path(tab_dir, "ml_external_bulk_model_summary.csv"))
+    safe_csv(add_model_row(NA_character_, "all", status = "skipped", reason = msg), file.path(tab_dir, "ml_external_bulk_model_summary.csv"))
     return(invisible(NULL))
   }
 
@@ -47,7 +60,7 @@ run_external_bulk_ml <- function(cfg) {
   if (!all(required_score_cols %in% colnames(scores)) || !all(required_path_cols %in% colnames(pathway))) {
     msg <- "External bulk ML skipped because required columns are missing from score/pathway tables."
     writeLines(c("# External bulk ML report", "", msg), file.path(rep_dir, "ml_external_bulk_report.md"))
-    safe_csv(data.frame(status = "skipped", reason = msg), file.path(tab_dir, "ml_external_bulk_model_summary.csv"))
+    safe_csv(add_model_row(NA_character_, "all", status = "skipped", reason = msg), file.path(tab_dir, "ml_external_bulk_model_summary.csv"))
     return(invisible(NULL))
   }
 
@@ -56,7 +69,7 @@ run_external_bulk_ml <- function(cfg) {
   if (nrow(wide) == 0) {
     msg <- "External bulk ML skipped because pathway score matrix could not be reshaped."
     writeLines(c("# External bulk ML report", "", msg), file.path(rep_dir, "ml_external_bulk_report.md"))
-    safe_csv(data.frame(status = "skipped", reason = msg), file.path(tab_dir, "ml_external_bulk_model_summary.csv"))
+    safe_csv(add_model_row(NA_character_, "all", status = "skipped", reason = msg), file.path(tab_dir, "ml_external_bulk_model_summary.csv"))
     return(invisible(NULL))
   }
   scores$key <- paste(scores$dataset, scores$sample, sep = "__")
@@ -65,7 +78,7 @@ run_external_bulk_ml <- function(cfg) {
   if (nrow(dat) == 0) {
     msg <- "External bulk ML skipped because no finite IgAN external CERI scores were available."
     writeLines(c("# External bulk ML report", "", msg), file.path(rep_dir, "ml_external_bulk_report.md"))
-    safe_csv(data.frame(status = "skipped", reason = msg), file.path(tab_dir, "ml_external_bulk_model_summary.csv"))
+    safe_csv(add_model_row(NA_character_, "all", status = "skipped", reason = msg), file.path(tab_dir, "ml_external_bulk_model_summary.csv"))
     return(invisible(NULL))
   }
 
@@ -79,7 +92,7 @@ run_external_bulk_ml <- function(cfg) {
     d <- d[is.finite(d$small_cluster_signature_score), , drop = FALSE]
     if (nrow(d) < 12) {
       add_note(paste(ds, "ML skipped: fewer than 12 IgAN samples with finite CERI scores."))
-      model_rows[[length(model_rows) + 1]] <- data.frame(dataset = ds, model = "all", threshold = "median", n = nrow(d), status = "skipped", reason = "too_few_samples", auc = NA_real_, stringsAsFactors = FALSE)
+      model_rows[[length(model_rows) + 1]] <- add_model_row(ds, "all", n = nrow(d), status = "skipped", reason = "too_few_samples")
       next
     }
     med <- stats::median(d$small_cluster_signature_score, na.rm = TRUE)
@@ -87,7 +100,7 @@ run_external_bulk_ml <- function(cfg) {
     n_pos <- sum(d$label == 1); n_neg <- sum(d$label == 0)
     if (min(n_pos, n_neg) < 5) {
       add_note(paste(ds, "ML skipped: one CERI-high/low class has fewer than 5 samples after median split."))
-      model_rows[[length(model_rows) + 1]] <- data.frame(dataset = ds, model = "all", threshold = "median", n = nrow(d), status = "skipped", reason = "class_too_small", auc = NA_real_, stringsAsFactors = FALSE)
+      model_rows[[length(model_rows) + 1]] <- add_model_row(ds, "all", n = nrow(d), n_high = n_pos, n_low = n_neg, status = "skipped", reason = "class_too_small")
       next
     }
     x <- as.matrix(d[, feature_cols, drop = FALSE])
@@ -96,7 +109,7 @@ run_external_bulk_ml <- function(cfg) {
     x <- x[, keep_features, drop = FALSE]
     if (ncol(x) < 2) {
       add_note(paste(ds, "ML skipped: fewer than two usable pathway/immune features."))
-      model_rows[[length(model_rows) + 1]] <- data.frame(dataset = ds, model = "all", threshold = "median", n = nrow(d), status = "skipped", reason = "too_few_features", auc = NA_real_, stringsAsFactors = FALSE)
+      model_rows[[length(model_rows) + 1]] <- add_model_row(ds, "all", n = nrow(d), n_high = n_pos, n_low = n_neg, status = "skipped", reason = "too_few_features")
       next
     }
     for (j in seq_len(ncol(x))) {
@@ -110,7 +123,7 @@ run_external_bulk_ml <- function(cfg) {
         fit <- tryCatch(glmnet::cv.glmnet(x, y, family = "binomial", alpha = alpha, nfolds = folds, type.measure = "deviance", keep = TRUE), error = function(e) e)
         if (inherits(fit, "error")) {
           add_note(paste(ds, model_name, "failed:", conditionMessage(fit)))
-          model_rows[[length(model_rows) + 1]] <- data.frame(dataset = ds, model = model_name, threshold = "median", n = nrow(d), status = "failed", reason = conditionMessage(fit), auc = NA_real_, stringsAsFactors = FALSE)
+          model_rows[[length(model_rows) + 1]] <- add_model_row(ds, model_name, n = nrow(d), n_high = n_pos, n_low = n_neg, n_features = ncol(x), status = "failed", reason = conditionMessage(fit))
         } else {
           pred <- as.numeric(stats::predict(fit, newx = x, s = "lambda.min", type = "response"))
           auc <- auc_rank(y, pred)
@@ -121,7 +134,7 @@ run_external_bulk_ml <- function(cfg) {
           sel <- sel[sel$feature != "(Intercept)" & sel$coefficient != 0, , drop = FALSE]
           if (nrow(sel) == 0) sel <- data.frame(dataset = ds, model = model_name, feature = "no_nonzero_feature_at_lambda_min", coefficient = 0, stringsAsFactors = FALSE)
           selected_rows[[length(selected_rows) + 1]] <- sel
-          model_rows[[length(model_rows) + 1]] <- data.frame(dataset = ds, model = model_name, threshold = "median", n = nrow(d), n_high = n_pos, n_low = n_neg, n_features = ncol(x), status = "success", reason = "exploratory external CERI-high vs CERI-low stratification", auc = auc, accuracy_at_0_5 = acc, stringsAsFactors = FALSE)
+          model_rows[[length(model_rows) + 1]] <- add_model_row(ds, model_name, n = nrow(d), n_high = n_pos, n_low = n_neg, n_features = ncol(x), status = "success", reason = "exploratory external CERI-high vs CERI-low stratification", auc = auc, accuracy_at_0_5 = acc)
           pred_rows[[length(pred_rows) + 1]] <- data.frame(dataset = ds, model = model_name, sample = d$sample, observed_CERI_high = y, predicted_probability = pred, stringsAsFactors = FALSE)
           r <- roc_df(y, pred)
           if (nrow(r) > 0) {
@@ -133,14 +146,14 @@ run_external_bulk_ml <- function(cfg) {
     } else {
       add_note(paste(ds, "glmnet unavailable; LASSO and Elastic Net skipped."))
     }
-    model_rows[[length(model_rows) + 1]] <- data.frame(dataset = ds, model = "RandomForest", threshold = "median", n = nrow(d), status = "skipped", reason = "randomForest/ranger dependency not required in GitHub Actions; optional supplementary model not run", auc = NA_real_, stringsAsFactors = FALSE)
-    model_rows[[length(model_rows) + 1]] <- data.frame(dataset = ds, model = "SVM-RFE", threshold = "median", n = nrow(d), status = "skipped", reason = "caret/e1071 dependency not required in GitHub Actions; optional supplementary model not run", auc = NA_real_, stringsAsFactors = FALSE)
-    model_rows[[length(model_rows) + 1]] <- data.frame(dataset = ds, model = "XGBoost_or_GBM", threshold = "median", n = nrow(d), status = "skipped", reason = "xgboost/gbm dependency not required in GitHub Actions; optional supplementary model not run", auc = NA_real_, stringsAsFactors = FALSE)
+    model_rows[[length(model_rows) + 1]] <- add_model_row(ds, "RandomForest", n = nrow(d), n_high = n_pos, n_low = n_neg, n_features = ncol(x), status = "skipped", reason = "randomForest/ranger dependency not required in GitHub Actions; optional supplementary model not run")
+    model_rows[[length(model_rows) + 1]] <- add_model_row(ds, "SVM-RFE", n = nrow(d), n_high = n_pos, n_low = n_neg, n_features = ncol(x), status = "skipped", reason = "caret/e1071 dependency not required in GitHub Actions; optional supplementary model not run")
+    model_rows[[length(model_rows) + 1]] <- add_model_row(ds, "XGBoost_or_GBM", n = nrow(d), n_high = n_pos, n_low = n_neg, n_features = ncol(x), status = "skipped", reason = "xgboost/gbm dependency not required in GitHub Actions; optional supplementary model not run")
   }
 
-  model_summary <- if (length(model_rows) > 0) do.call(rbind, model_rows) else data.frame(status = "skipped", reason = "No dataset eligible for external bulk ML.")
-  selected <- if (length(selected_rows) > 0) do.call(rbind, selected_rows) else data.frame(dataset = NA_character_, model = NA_character_, feature = NA_character_, coefficient = NA_real_)
-  preds <- if (length(pred_rows) > 0) do.call(rbind, pred_rows) else data.frame()
+  model_summary <- if (length(model_rows) > 0) bind_rows_fill(model_rows) else add_model_row(NA_character_, "all", status = "skipped", reason = "No dataset eligible for external bulk ML.")
+  selected <- if (length(selected_rows) > 0) bind_rows_fill(selected_rows) else data.frame(dataset = NA_character_, model = NA_character_, feature = NA_character_, coefficient = NA_real_)
+  preds <- if (length(pred_rows) > 0) bind_rows_fill(pred_rows) else data.frame()
   safe_csv(model_summary, file.path(tab_dir, "ml_external_bulk_model_summary.csv"))
   safe_csv(selected, file.path(tab_dir, "ml_external_bulk_selected_genes.csv"))
   if (nrow(preds) > 0) safe_csv(preds, file.path(tab_dir, "ml_external_bulk_predictions.csv"))
