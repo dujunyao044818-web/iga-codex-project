@@ -10,6 +10,8 @@ source("R/subtype_interpretation.R")
 source("R/external_igan_validation.R")
 source("R/qc_all_datasets.R")
 source("R/external_bulk_ml.R")
+source("R/functional_enrichment_package.R")
+source("R/output_reports.R")
 source("R/final_summary_figures.R")
 source("R/manuscript_figures.R")
 
@@ -64,5 +66,7 @@ log_step("Figure-first manuscript package", run_manuscript_figures(cfg), require
 log_step("IgAN Hallmark GSVA and immune signatures", run_functional(igan_expr, subtype, cfg), required = FALSE)
 log_step("IgAN LASSO subtype model", run_lasso(igan_expr, subtype, markers, cfg), required = FALSE)
 log_step("Single-cell and spatial validation planning", run_single_cell(markers, cfg), required = FALSE)
+log_step("Optional functional enrichment package", run_functional_enrichment_package(cfg), required = FALSE)
+log_step("Figure organization and final reports", run_figure_organization_and_reports(cfg), required = FALSE)
 
 message("Pipeline complete. Outputs written to ", normalizePath(cfg$output_dir))
