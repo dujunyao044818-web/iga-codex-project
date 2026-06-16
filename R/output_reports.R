@@ -52,7 +52,7 @@ run_figure_organization_and_reports <- function(cfg) {
   supp_report <- c(
     "# Supplementary results inventory",
     "",
-    "Supplementary figures are stored in `output/supplementary_figures/`, `output/supplementary/qc/`, `output/supplementary/ml_external_bulk/`, and `output/supplementary/functional_enrichment/` when generated.",
+    "Supplementary figures are stored in `output/supplementary_figures/`, `output/supplementary_figures/single_cell/`, `output/supplementary/qc/`, `output/supplementary/ml_external_bulk/`, and `output/supplementary/functional_enrichment/` when generated.",
     "",
     paste0("Number of copied supplementary figure files: ", length(fig_files))
   )
@@ -61,7 +61,7 @@ run_figure_organization_and_reports <- function(cfg) {
   fig_report <- c(
     "# Figure allocation report",
     "",
-    "QC-heavy figures, PCA QC plots, consensus CDF/delta plots, density/boxplots, and small-cluster diagnostics are supplementary, not main text figures.",
+    "QC-heavy figures, PCA QC plots, consensus CDF/delta plots, density/boxplots, WGCNA/PPI/ML diagnostics, and small-cluster diagnostics are supplementary, not main text figures.",
     "",
     "Main figure directory: `output/main_figures/`",
     "Supplementary figure directory: `output/supplementary_figures/`"
@@ -76,5 +76,21 @@ run_figure_organization_and_reports <- function(cfg) {
     "If a dataset lacks usable metadata or expression values, the pipeline records a skipped status rather than failing."
   )
   writeLines(qc_corr, file.path(report_dir, "qc_corrections_report.md"))
+
+  gaps <- c(
+    "# Remaining analysis gaps report",
+    "",
+    "The main text remains focused on the CERI-like IgAN mechanism: complement activation, ECM remodeling, immune/inflammatory amplification, and glomerular structural injury.",
+    "",
+    "QC, ML, WGCNA, PPI, and full enrichment outputs are allocated to supplementary results unless external evidence is exceptionally strong.",
+    "",
+    "The current pipeline avoids claiming a robust diagnostic classifier. External ML analyses are exploratory marker-prioritization and stratification tools.",
+    "",
+    "Remaining gaps:",
+    "- Harmonized external expression matrices are required for full external QC and fully independent model fitting.",
+    "- Single-cell GSE171314 conclusions depend on availability of the independent Seurat reanalysis artifact during the integrated pipeline run.",
+    "- WGCNA should be restricted to larger external cohorts or clearly labelled exploratory."
+  )
+  writeLines(gaps, file.path(report_dir, "remaining_analysis_gaps_report.md"))
   invisible(TRUE)
 }
