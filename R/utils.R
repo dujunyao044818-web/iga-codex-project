@@ -14,7 +14,8 @@ ensure_packages <- function(pkgs) {
 make_dirs <- function(cfg) {
   dirs <- file.path(cfg$output_dir, c(
     "figures", "tables", "models", "reports", "main_figures", "supplementary_figures",
-    "supplementary/qc", "supplementary/ml_external_bulk", "supplementary/functional_enrichment"
+    "supplementary_figures/single_cell", "supplementary/qc", "supplementary/qc/external_bulk_full_qc",
+    "supplementary/ml_external_bulk", "supplementary/functional_enrichment"
   ))
   invisible(lapply(dirs, dir.create, recursive = TRUE, showWarnings = FALSE))
   invisible(lapply(c("data/raw", "data/processed"), dir.create, recursive = TRUE, showWarnings = FALSE))
